@@ -406,15 +406,15 @@ func getClientIP(r *http.Request) string {
 
 	// Check X-Real-IP header
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+		return xri
 	}
 
 	// Fall back to RemoteAddr
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	return host
+
+	return r.RemoteAddr
 }
 
 // parseCaddyfile unmarshals tokens from h into a new Middleware.

@@ -52,10 +52,10 @@ build:
 
     # Build the LATEST version of Caddy with both plugins:
     # - Cloudflare DNS plugin for ACME DNS challenges
-    # - Local Tailscale auth plugin
+    # - Local Tailscale auth plugin (using local source code)
     RUN xcaddy build latest \
         --with github.com/caddy-dns/cloudflare \
-        --with github.com/juridia-net/caddy-tailscale-auth
+        --with caddyauth=.
 
     # Save the compiled binary as an artifact for the next stage.
     SAVE ARTIFACT ./caddy /caddy
