@@ -282,13 +282,10 @@ func (t *TailscaleAuth) saveDeviceCache() error {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
 	}
-
 	t.logger.Debug("cache directory created/verified", zap.String("cache_dir", cacheDir))
 
-	t.cacheMutex.RLock()
+	// Note: We don't need to lock here because the caller (refreshDeviceCache) already holds the write lock
 	data, err := json.MarshalIndent(t.deviceCache, "", "  ")
-	t.cacheMutex.RUnlock()
-
 	if err != nil {
 		return fmt.Errorf("failed to marshal cache: %w", err)
 	}
