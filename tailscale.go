@@ -6,7 +6,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -16,8 +19,43 @@ import (
 )
 
 func init() {
-	caddy.RegisterModule(TailscaleAuth{})
+	caddy.RegisterModule((*TailscaleAuth)(nil))
 	httpcaddyfile.RegisterHandlerDirective("tailscale_auth", parseCaddyfile)
+}
+
+// Device represents a Tailscale device from the API
+type Device struct {
+	Addresses                 []string `json:"addresses"`
+	Authorized                bool     `json:"authorized"`
+	BlocksIncomingConnections bool     `json:"blocksIncomingConnections"`
+	ClientVersion             string   `json:"clientVersion"`
+	Created                   string   `json:"created"`
+	Expires                   string   `json:"expires"`
+	Hostname                  string   `json:"hostname"`
+	ID                        string   `json:"id"`
+	IsExternal                bool     `json:"isExternal"`
+	KeyExpiryDisabled         bool     `json:"keyExpiryDisabled"`
+	LastSeen                  string   `json:"lastSeen"`
+	MachineKey                string   `json:"machineKey"`
+	Name                      string   `json:"name"`
+	NodeID                    string   `json:"nodeId"`
+	NodeKey                   string   `json:"nodeKey"`
+	OS                        string   `json:"os"`
+	TailnetLockError          string   `json:"tailnetLockError"`
+	TailnetLockKey            string   `json:"tailnetLockKey"`
+	UpdateAvailable           bool     `json:"updateAvailable"`
+	User                      string   `json:"user"`
+}
+
+// DevicesResponse represents the response from Tailscale's devices API
+type DevicesResponse struct {
+	Devices []Device `json:"devices"`
+}
+
+// DeviceCache represents the cached device information
+type DeviceCache struct {
+	IPToDevice map[string]*Device `json:"ip_to_device"`
+	LastUpdate string             `json:"last_update"`
 }
 
 // TailscaleAuth is a Caddy module that fetches Tailscale user information
@@ -32,7 +70,12 @@ type TailscaleAuth struct {
 	// HeaderPrefix is the prefix for headers that will be added (default: "X-Tailscale-")
 	HeaderPrefix string `json:"header_prefix,omitempty"`
 
-	logger *zap.Logger
+	// CacheFile is the path to store the device cache (default: "tailscale_devices.json")
+	CacheFile string `json:"cache_file,omitempty"`
+
+	logger      *zap.Logger
+	deviceCache *DeviceCache
+	cacheMutex  sync.RWMutex
 }
 
 // WhoIsResponse represents the response from Tailscale's whois API
@@ -65,7 +108,7 @@ type WhoIsResponse struct {
 }
 
 // CaddyModule returns the Caddy module information.
-func (TailscaleAuth) CaddyModule() caddy.ModuleInfo {
+func (*TailscaleAuth) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.tailscale_auth",
 		New: func() caddy.Module { return new(TailscaleAuth) },
@@ -81,12 +124,26 @@ func (t *TailscaleAuth) Provision(ctx caddy.Context) error {
 		t.HeaderPrefix = "X-Tailscale-"
 	}
 
+	if t.CacheFile == "" {
+		t.CacheFile = "tailscale_devices.json"
+	}
+
 	if t.Tailnet == "" {
 		return fmt.Errorf("tailnet is required")
 	}
 
 	if t.APIKey == "" {
 		return fmt.Errorf("api_key is required")
+	}
+
+	// Initialize device cache
+	t.deviceCache = &DeviceCache{
+		IPToDevice: make(map[string]*Device),
+	}
+
+	// Load existing cache from disk
+	if err := t.loadDeviceCache(); err != nil {
+		t.logger.Warn("failed to load device cache, starting with empty cache", zap.Error(err))
 	}
 
 	return nil
@@ -114,18 +171,18 @@ func (t *TailscaleAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		return next.ServeHTTP(w, r)
 	}
 
-	// Get Tailscale user information
-	whois, err := t.getTailscaleUser(clientIP)
+	// Get device information from cache (will refresh if not found)
+	device, err := t.getDeviceByIP(clientIP)
 	if err != nil {
-		t.logger.Error("failed to get Tailscale user info",
+		t.logger.Error("failed to get device info",
 			zap.String("client_ip", clientIP),
 			zap.Error(err))
-		// Continue with the request even if Tailscale lookup fails
+		// Continue with the request even if device lookup fails
 		return next.ServeHTTP(w, r)
 	}
 
-	// Add user information to headers
-	t.addUserHeaders(r, whois)
+	// Add device information to headers
+	t.addDeviceHeaders(r, device)
 
 	return next.ServeHTTP(w, r)
 }
@@ -192,6 +249,28 @@ func (t *TailscaleAuth) addUserHeaders(r *http.Request, whois *WhoIsResponse) {
 	}
 }
 
+// addDeviceHeaders adds Tailscale device information to request headers
+func (t *TailscaleAuth) addDeviceHeaders(r *http.Request, device *Device) {
+	// Device information
+	r.Header.Set(t.HeaderPrefix+"Device-ID", device.ID)
+	r.Header.Set(t.HeaderPrefix+"Device-Name", device.Name)
+	r.Header.Set(t.HeaderPrefix+"Device-User", device.User)
+	r.Header.Set(t.HeaderPrefix+"Device-Hostname", device.Hostname)
+	r.Header.Set(t.HeaderPrefix+"Device-OS", device.OS)
+	r.Header.Set(t.HeaderPrefix+"Device-Authorized", fmt.Sprintf("%t", device.Authorized))
+	r.Header.Set(t.HeaderPrefix+"Device-NodeID", device.NodeID)
+
+	// Device addresses (join multiple addresses with comma)
+	if len(device.Addresses) > 0 {
+		r.Header.Set(t.HeaderPrefix+"Device-Addresses", strings.Join(device.Addresses, ","))
+	}
+
+	// Additional device metadata
+	r.Header.Set(t.HeaderPrefix+"Device-ClientVersion", device.ClientVersion)
+	r.Header.Set(t.HeaderPrefix+"Device-LastSeen", device.LastSeen)
+	r.Header.Set(t.HeaderPrefix+"Device-Created", device.Created)
+}
+
 func (m *TailscaleAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
@@ -200,15 +279,12 @@ func (m *TailscaleAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-
 				m.APIKey = d.Val()
 
 			case "tailnet":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-
-
 				m.Tailnet = d.Val()
 
 			case "header_prefix":
@@ -217,10 +293,166 @@ func (m *TailscaleAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				} else {
 					m.HeaderPrefix = d.Val()
 				}
+
+			case "cache_file":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheFile = d.Val()
 			}
 		}
 	}
 	return nil
+}
+
+// loadDeviceCache loads the device cache from disk
+func (t *TailscaleAuth) loadDeviceCache() error {
+	cacheFile := t.getCacheFilePath()
+
+	data, err := os.ReadFile(cacheFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Cache file doesn't exist, start with empty cache
+		}
+		return fmt.Errorf("failed to read cache file: %w", err)
+	}
+
+	t.cacheMutex.Lock()
+	defer t.cacheMutex.Unlock()
+
+	if err := json.Unmarshal(data, t.deviceCache); err != nil {
+		return fmt.Errorf("failed to unmarshal cache: %w", err)
+	}
+
+	t.logger.Info("loaded device cache",
+		zap.Int("device_count", len(t.deviceCache.IPToDevice)),
+		zap.String("last_update", t.deviceCache.LastUpdate))
+
+	return nil
+}
+
+// saveDeviceCache saves the device cache to disk
+func (t *TailscaleAuth) saveDeviceCache() error {
+	cacheFile := t.getCacheFilePath()
+
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	t.cacheMutex.RLock()
+	data, err := json.MarshalIndent(t.deviceCache, "", "  ")
+	t.cacheMutex.RUnlock()
+
+	if err != nil {
+		return fmt.Errorf("failed to marshal cache: %w", err)
+	}
+
+	if err := os.WriteFile(cacheFile, data, 0644); err != nil {
+		return fmt.Errorf("failed to write cache file: %w", err)
+	}
+
+	return nil
+}
+
+// getCacheFilePath returns the full path to the cache file
+func (t *TailscaleAuth) getCacheFilePath() string {
+	if filepath.IsAbs(t.CacheFile) {
+		return t.CacheFile
+	}
+	// If relative path, use current working directory
+	return t.CacheFile
+}
+
+// refreshDeviceCache fetches the latest device list from Tailscale API
+func (t *TailscaleAuth) refreshDeviceCache() error {
+	url := fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/devices", t.Tailnet)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+t.APIKey)
+	req.Header.Set("User-Agent", "Caddy-Tailscale-Auth/1.0")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API request failed with status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var devicesResp DevicesResponse
+	if err := json.Unmarshal(body, &devicesResp); err != nil {
+		return fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	// Update cache with new device data
+	t.cacheMutex.Lock()
+	defer t.cacheMutex.Unlock()
+
+	// Clear existing cache
+	t.deviceCache.IPToDevice = make(map[string]*Device)
+
+	// Populate cache with new devices
+	for i := range devicesResp.Devices {
+		device := &devicesResp.Devices[i]
+		for _, addr := range device.Addresses {
+			t.deviceCache.IPToDevice[addr] = device
+		}
+	}
+
+	t.deviceCache.LastUpdate = resp.Header.Get("Date")
+
+	t.logger.Info("refreshed device cache",
+		zap.Int("device_count", len(devicesResp.Devices)),
+		zap.Int("ip_mappings", len(t.deviceCache.IPToDevice)))
+
+	// Save updated cache to disk
+	if err := t.saveDeviceCache(); err != nil {
+		t.logger.Error("failed to save device cache", zap.Error(err))
+	}
+
+	return nil
+}
+
+// getDeviceByIP returns the device for the given IP address, refreshing cache if needed
+func (t *TailscaleAuth) getDeviceByIP(clientIP string) (*Device, error) {
+	// First, check if device exists in cache
+	t.cacheMutex.RLock()
+	device, exists := t.deviceCache.IPToDevice[clientIP]
+	t.cacheMutex.RUnlock()
+
+	if exists && device != nil {
+		return device, nil
+	}
+
+	// Device not found in cache, refresh and try again
+	t.logger.Info("unknown device IP, refreshing cache", zap.String("client_ip", clientIP))
+
+	if err := t.refreshDeviceCache(); err != nil {
+		return nil, fmt.Errorf("failed to refresh device cache: %w", err)
+	}
+
+	// Check cache again after refresh
+	t.cacheMutex.RLock()
+	device, exists = t.deviceCache.IPToDevice[clientIP]
+	t.cacheMutex.RUnlock()
+
+	if !exists || device == nil {
+		return nil, fmt.Errorf("device not found for IP %s even after cache refresh", clientIP)
+	}
+
+	return device, nil
 }
 
 // getClientIP extracts the client IP from the request
@@ -247,8 +479,6 @@ func getClientIP(r *http.Request) string {
 	return host
 }
 
-
-
 // parseCaddyfile unmarshals tokens from h into a new Middleware.
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var t TailscaleAuth
@@ -273,6 +503,12 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 					return nil, h.ArgErr()
 				}
 				t.HeaderPrefix = h.Val()
+
+			case "cache_file":
+				if !h.NextArg() {
+					return nil, h.ArgErr()
+				}
+				t.CacheFile = h.Val()
 
 			default:
 				return nil, h.Errf("unrecognized subdirective: %s", h.Val())

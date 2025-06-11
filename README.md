@@ -1,14 +1,16 @@
 # Caddy Tailscale Auth Plugin
 
-A Caddy plugin that integrates with Tailscale's API to authenticate users and inject user information into HTTP request headers. This plugin fetches user details from Tailscale's WhoIs API and adds them as headers for downstream applications to use.
+A Caddy plugin that integrates with Tailscale's API to authenticate users and inject device information into HTTP request headers. This plugin fetches device details from Tailscale's devices API with intelligent caching for optimal performance.
 
 ## Features
 
-- 🔐 **Automatic User Authentication**: Queries Tailscale API to get user information based on client IP
-- 📝 **Header Injection**: Adds comprehensive user and node information to request headers
+- 🔐 **Automatic Device Authentication**: Queries Tailscale API to get device information based on client IP
+- 📝 **Header Injection**: Adds comprehensive device and user information to request headers
+- 💾 **Intelligent Caching**: Caches device list with automatic refresh for unknown devices
+- 💿 **Persistent Cache**: Serializes device cache to disk for faster startup
 - ⚡ **Non-blocking**: Continues processing requests even if Tailscale lookup fails
-- 🛠️ **Configurable**: Customizable API endpoints, header prefixes, and more
-- 🚀 **High Performance**: Efficient HTTP client with proper error handling
+- 🛠️ **Configurable**: Customizable API endpoints, header prefixes, cache file location, and more
+- 🚀 **High Performance**: Efficient caching with minimal API calls
 
 ## Installation
 
@@ -41,6 +43,7 @@ example.com {
         api_key "tskey-api-your-api-key-here"
         tailnet "your-tailnet.net"
         header_prefix "X-Tailscale-"
+        cache_file "tailscale_devices.json"
     }
     
     # Your other directives
@@ -55,6 +58,7 @@ example.com {
 | `api_key` | Yes | - | Your Tailscale API key (tskey-xxx) |
 | `tailnet` | Yes | - | Your Tailnet domain (e.g., "juridia.net") |
 | `header_prefix` | No | "X-Tailscale-" | Prefix for injected headers |
+| `cache_file` | No | "tailscale_devices.json" | Path to store device cache file |
 
 ### JSON Configuration
 
@@ -63,7 +67,8 @@ example.com {
   "handler": "tailscale_auth",
   "api_key": "tskey-api-your-api-key-here",
   "tailnet": "your-tailnet.net",
-  "header_prefix": "X-Tailscale-"
+  "header_prefix": "X-Tailscale-",
+  "cache_file": "tailscale_devices.json"
 }
 ```
 
@@ -71,21 +76,52 @@ example.com {
 
 The plugin injects the following headers into requests:
 
-### Node Information
-- `X-Tailscale-Node-ID`: Unique node identifier
-- `X-Tailscale-Node-Name`: Node name in Tailscale
-- `X-Tailscale-Node-User`: User ID associated with the node
-- `X-Tailscale-Node-Hostname`: Device hostname
-- `X-Tailscale-Node-OS`: Operating system
-- `X-Tailscale-Node-Online`: Whether the node is currently online (true/false)
-- `X-Tailscale-Node-Expired`: Whether the node key has expired (true/false)
-- `X-Tailscale-Node-Addresses`: Comma-separated list of IP addresses
-- `X-Tailscale-Node-Tags`: Comma-separated list of ACL tags
+### Device Information
+- `X-Tailscale-Device-ID`: Unique device identifier
+- `X-Tailscale-Device-Name`: Device name in Tailscale (e.g., "bear.tail0cb6c3.ts.net")
+- `X-Tailscale-Device-User`: User ID associated with the device
+- `X-Tailscale-Device-Hostname`: Device hostname
+- `X-Tailscale-Device-OS`: Operating system
+- `X-Tailscale-Device-Authorized`: Whether the device is authorized (true/false)
+- `X-Tailscale-Device-NodeID`: Tailscale node identifier
+- `X-Tailscale-Device-Addresses`: Comma-separated list of IP addresses
+- `X-Tailscale-Device-ClientVersion`: Tailscale client version
+- `X-Tailscale-Device-LastSeen`: Last seen timestamp
+- `X-Tailscale-Device-Created`: Device creation timestamp
 
-### User Profile Information
-- `X-Tailscale-User-ID`: Unique user identifier
-- `X-Tailscale-User-LoginName`: User's login name (email)
-- `X-Tailscale-User-DisplayName`: User's display name
+## How Device Caching Works
+
+The plugin implements an intelligent caching system to minimize API calls and improve performance:
+
+1. **Startup**: Loads existing device cache from disk (if available)
+2. **Request Processing**: 
+   - Checks if the client IP exists in the device cache
+   - If found, immediately returns device information
+   - If not found, refreshes the entire device list from Tailscale API
+   - Updates cache with new device data and saves to disk
+3. **Cache Persistence**: Device cache is automatically saved to disk after each refresh
+
+### Cache File Format
+
+The cache file is stored as JSON with the following structure:
+
+```json
+{
+  "ip_to_device": {
+    "100.102.96.111": {
+      "id": "8725175914844383",
+      "name": "bear.tail0cb6c3.ts.net",
+      "user": "pnocera@github",
+      "hostname": "bear",
+      "os": "linux",
+      "authorized": true,
+      "addresses": ["100.102.96.111", "fd7a:115c:a1e0::3601:606f"],
+      ...
+    }
+  },
+  "last_update": "Wed, 11 Jun 2025 08:00:00 GMT"
+}
+```
 
 ## API Requirements
 

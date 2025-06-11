@@ -6,7 +6,7 @@
 *.dylib
 caddy
 caddy.exe
-
+*.http
 # Test binary, built with `go test -c`
 *.test
 
