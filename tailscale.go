@@ -272,11 +272,18 @@ func (t *TailscaleAuth) loadDeviceCache() error {
 // saveDeviceCache saves the device cache to disk
 func (t *TailscaleAuth) saveDeviceCache() error {
 	cacheFile := t.getCacheFilePath()
+	cacheDir := filepath.Dir(cacheFile)
+
+	t.logger.Info("attempting to save device cache",
+		zap.String("cache_file", cacheFile),
+		zap.String("cache_dir", cacheDir))
 
 	// Create directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(cacheFile), 0755); err != nil {
-		return fmt.Errorf("failed to create cache directory: %w", err)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
 	}
+
+	t.logger.Debug("cache directory created/verified", zap.String("cache_dir", cacheDir))
 
 	t.cacheMutex.RLock()
 	data, err := json.MarshalIndent(t.deviceCache, "", "  ")
@@ -286,9 +293,15 @@ func (t *TailscaleAuth) saveDeviceCache() error {
 		return fmt.Errorf("failed to marshal cache: %w", err)
 	}
 
+	t.logger.Debug("cache data marshaled", zap.Int("data_size", len(data)))
+
 	if err := os.WriteFile(cacheFile, data, 0644); err != nil {
-		return fmt.Errorf("failed to write cache file: %w", err)
+		return fmt.Errorf("failed to write cache file %s: %w", cacheFile, err)
 	}
+
+	t.logger.Info("device cache saved successfully",
+		zap.String("cache_file", cacheFile),
+		zap.Int("data_size", len(data)))
 
 	return nil
 }
