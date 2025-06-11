@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
@@ -191,6 +192,37 @@ func (t *TailscaleAuth) addUserHeaders(r *http.Request, whois *WhoIsResponse) {
 	}
 }
 
+func (m *TailscaleAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.Next() {
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case "api_key":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+
+				m.APIKey = d.Val()
+
+			case "tailnet":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+
+
+				m.Tailnet = d.Val()
+
+			case "header_prefix":
+				if !d.NextArg() {
+					m.HeaderPrefix = "X-Tailscale-"
+				} else {
+					m.HeaderPrefix = d.Val()
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // getClientIP extracts the client IP from the request
 func getClientIP(r *http.Request) string {
 	// Check X-Forwarded-For header first
@@ -214,6 +246,8 @@ func getClientIP(r *http.Request) string {
 	}
 	return host
 }
+
+
 
 // parseCaddyfile unmarshals tokens from h into a new Middleware.
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -254,4 +288,5 @@ var (
 	_ caddy.Provisioner           = (*TailscaleAuth)(nil)
 	_ caddy.Validator             = (*TailscaleAuth)(nil)
 	_ caddyhttp.MiddlewareHandler = (*TailscaleAuth)(nil)
+	_ caddyfile.Unmarshaler       = (*TailscaleAuth)(nil)
 )

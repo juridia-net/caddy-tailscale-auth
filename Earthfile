@@ -55,7 +55,7 @@ build:
     # - Local Tailscale auth plugin
     RUN xcaddy build latest \
         --with github.com/caddy-dns/cloudflare \
-        --with github.com/juridia/caddy-tailscale-auth=.
+        --with github.com/juridia-net/caddy-tailscale-auth
 
     # Save the compiled binary as an artifact for the next stage.
     SAVE ARTIFACT ./caddy /caddy
