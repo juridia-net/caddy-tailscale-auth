@@ -187,68 +187,6 @@ func (t *TailscaleAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	return next.ServeHTTP(w, r)
 }
 
-// getTailscaleUser fetches user information from Tailscale API
-func (t *TailscaleAuth) getTailscaleUser(clientIP string) (*WhoIsResponse, error) {
-	url := fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/whois?addr=%s", t.Tailnet, clientIP)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+t.APIKey)
-	req.Header.Set("User-Agent", "Caddy-Tailscale-Auth/1.0")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed with status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var whois WhoIsResponse
-	if err := json.Unmarshal(body, &whois); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &whois, nil
-}
-
-// addUserHeaders adds Tailscale user information to request headers
-func (t *TailscaleAuth) addUserHeaders(r *http.Request, whois *WhoIsResponse) {
-	// Node information
-	r.Header.Set(t.HeaderPrefix+"Node-ID", whois.Node.ID)
-	r.Header.Set(t.HeaderPrefix+"Node-Name", whois.Node.Name)
-	r.Header.Set(t.HeaderPrefix+"Node-User", whois.Node.User)
-	r.Header.Set(t.HeaderPrefix+"Node-Hostname", whois.Node.Hostname)
-	r.Header.Set(t.HeaderPrefix+"Node-OS", whois.Node.OS)
-	r.Header.Set(t.HeaderPrefix+"Node-Online", fmt.Sprintf("%t", whois.Node.Online))
-	r.Header.Set(t.HeaderPrefix+"Node-Expired", fmt.Sprintf("%t", whois.Node.Expired))
-
-	// User profile information
-	r.Header.Set(t.HeaderPrefix+"User-ID", whois.UserProfile.ID)
-	r.Header.Set(t.HeaderPrefix+"User-LoginName", whois.UserProfile.LoginName)
-	r.Header.Set(t.HeaderPrefix+"User-DisplayName", whois.UserProfile.DisplayName)
-
-	// Node addresses (join multiple addresses with comma)
-	if len(whois.Node.Addresses) > 0 {
-		r.Header.Set(t.HeaderPrefix+"Node-Addresses", strings.Join(whois.Node.Addresses, ","))
-	}
-
-	// Node tags (join multiple tags with comma)
-	if len(whois.Node.Tags) > 0 {
-		r.Header.Set(t.HeaderPrefix+"Node-Tags", strings.Join(whois.Node.Tags, ","))
-	}
-}
-
 // addDeviceHeaders adds Tailscale device information to request headers
 func (t *TailscaleAuth) addDeviceHeaders(r *http.Request, device *Device) {
 	// Device information
