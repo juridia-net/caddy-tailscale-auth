@@ -55,6 +55,7 @@ build:
     # - Local Tailscale auth plugin (using local source code)
     RUN xcaddy build latest \
         --with github.com/caddy-dns/cloudflare \
+        --with github.com/mholt/caddy-l4 \
         --with caddyauth=.
 
     # Save the compiled binary as an artifact for the next stage.
